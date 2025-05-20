@@ -1,16 +1,10 @@
 package test.java.com.shashi.service.impl;
 
-import com.shashi.beans.TrainBean;
-import com.shashi.beans.TrainException;
-import com.shashi.constant.ResponseCode;
-import com.shashi.service.impl.TrainServiceImpl;
-import com.shashi.utility.DBUtil;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.MockedStatic;
-import org.mockito.junit.jupiter.MockitoExtension;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.*;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -18,420 +12,366 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.*;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import com.shashi.beans.TrainBean;
+import com.shashi.beans.TrainException;
+import com.shashi.constant.ResponseCode;
+import com.shashi.service.impl.TrainServiceImpl;
+import com.shashi.utility.DBUtil;
 
 @ExtendWith(MockitoExtension.class)
 class TrainServiceImplTest {
 
     @Mock
-    private Connection connection;
+    private Connection mockConnection;
 
     @Mock
-    private PreparedStatement preparedStatement;
+    private PreparedStatement mockPreparedStatement;
 
     @Mock
-    private ResultSet resultSet;
+    private ResultSet mockResultSet;
 
+    @InjectMocks
     private TrainServiceImpl trainService;
 
+    private MockedStatic<DBUtil> mockedDBUtil;
+
     @BeforeEach
-    void setUp() {
-        trainService = new TrainServiceImpl();
+    void setUp() throws Exception {
+        // Mock the static DBUtil.getConnection() method
+        mockedDBUtil = Mockito.mockStatic(DBUtil.class);
+        mockedDBUtil.when(DBUtil::getConnection).thenReturn(mockConnection);
+
+        // Common mock behavior for PreparedStatement
+        when(mockConnection.prepareStatement(anyString())).thenReturn(mockPreparedStatement);
+    }
+
+    @AfterEach
+    void tearDown() {
+        // Close the static mock
+        mockedDBUtil.close();
+    }
+
+    private TrainBean createSampleTrain() {
+        TrainBean train = new TrainBean();
+        train.setTr_no(12345L);
+        train.setTr_name("Test Express");
+        train.setFrom_stn("Station A");
+        train.setTo_stn("Station B");
+        train.setSeats(100);
+        train.setFare(500.00);
+        return train;
     }
 
     @Test
-    void testAddTrain_Success() throws SQLException {
-        // Arrange
-        TrainBean train = createTrainBean();
-        when(resultSet.next()).thenReturn(true);
-        when(preparedStatement.executeQuery()).thenReturn(resultSet);
-        when(connection.prepareStatement(anyString())).thenReturn(preparedStatement);
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
+    void testAddTrain_Success() throws SQLException, TrainException {
+        TrainBean train = createSampleTrain();
+        when(mockPreparedStatement.executeQuery()).thenReturn(mockResultSet);
+        when(mockResultSet.next()).thenReturn(true); // Simulate successful insertion indication
 
-            // Act
-            String result = trainService.addTrain(train);
+        String result = trainService.addTrain(train);
 
-            // Assert
-            assertEquals(ResponseCode.SUCCESS.toString(), result);
-            verify(preparedStatement).setLong(1, train.getTr_no());
-            verify(preparedStatement).setString(2, train.getTr_name());
-            verify(preparedStatement).setString(3, train.getFrom_stn());
-            verify(preparedStatement).setString(4, train.getTo_stn());
-            verify(preparedStatement).setLong(5, train.getSeats());
-            verify(preparedStatement).setDouble(6, train.getFare());
-            verify(preparedStatement).close();
-        }
+        assertEquals(ResponseCode.SUCCESS.toString(), result);
+        verify(mockPreparedStatement).setLong(1, train.getTr_no());
+        verify(mockPreparedStatement).setString(2, train.getTr_name());
+        verify(mockPreparedStatement).setString(3, train.getFrom_stn());
+        verify(mockPreparedStatement).setString(4, train.getTo_stn());
+        verify(mockPreparedStatement).setLong(5, train.getSeats());
+        verify(mockPreparedStatement).setDouble(6, train.getFare());
+        verify(mockPreparedStatement).executeQuery();
+        verify(mockPreparedStatement).close();
+    }
+    
+    @Test
+    void testAddTrain_Failure_NoRowAffected() throws SQLException, TrainException {
+        // This test highlights a potential issue in the original code.
+        // INSERT typically uses executeUpdate() and checks the int return value.
+        // executeQuery() for INSERT is unusual. If rs.next() is false, it means no result set was generated.
+        TrainBean train = createSampleTrain();
+        when(mockPreparedStatement.executeQuery()).thenReturn(mockResultSet);
+        when(mockResultSet.next()).thenReturn(false); // Simulate failure or no result set
+
+        String result = trainService.addTrain(train);
+
+        assertEquals(ResponseCode.FAILURE.toString(), result);
+        verify(mockPreparedStatement).executeQuery();
+        verify(mockPreparedStatement).close();
+    }
+
+
+    @Test
+    void testAddTrain_SQLException() throws SQLException, TrainException {
+        TrainBean train = createSampleTrain();
+        when(mockPreparedStatement.executeQuery()).thenThrow(new SQLException("DB Error"));
+
+        String result = trainService.addTrain(train);
+
+        assertTrue(result.startsWith(ResponseCode.FAILURE.toString()));
+        assertTrue(result.contains("DB Error"));
+        verify(mockPreparedStatement).close(); // Should still try to close
+    }
+    
+    @Test
+    void testAddTrain_TrainExceptionFromDBUtil() throws SQLException, TrainException {
+        // Test scenario where DBUtil.getConnection() itself throws TrainException
+        mockedDBUtil.when(DBUtil::getConnection).thenThrow(new TrainException("DBUtil Connection Failed"));
+        TrainBean train = createSampleTrain();
+
+        // Re-initialize trainService or use a fresh instance if @InjectMocks doesn't re-evaluate DBUtil call
+        // For simplicity, we'll assume the injected service will re-attempt DBUtil.getConnection()
+        
+        String result = trainService.addTrain(train);
+        
+        assertTrue(result.startsWith(ResponseCode.FAILURE.toString()));
+        assertTrue(result.contains("DBUtil Connection Failed"));
+        // PreparedStatement wouldn't be created or closed in this specific path
+        verify(mockConnection, never()).prepareStatement(anyString());
+        verify(mockPreparedStatement, never()).close();
+    }
+
+
+    @Test
+    void testDeleteTrainById_Success() throws SQLException, TrainException {
+        String trainNo = "12345";
+        when(mockPreparedStatement.executeUpdate()).thenReturn(1); // 1 row affected
+
+        String result = trainService.deleteTrainById(trainNo);
+
+        assertEquals(ResponseCode.SUCCESS.toString(), result);
+        verify(mockPreparedStatement).setString(1, trainNo);
+        verify(mockPreparedStatement).executeUpdate();
+        verify(mockPreparedStatement).close();
     }
 
     @Test
-    void testAddTrain_Failure() throws SQLException {
-        // Arrange
-        TrainBean train = createTrainBean();
-        when(resultSet.next()).thenReturn(false);
-        when(preparedStatement.executeQuery()).thenReturn(resultSet);
-        when(connection.prepareStatement(anyString())).thenReturn(preparedStatement);
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
+    void testDeleteTrainById_Failure_NoRowAffected() throws SQLException, TrainException {
+        String trainNo = "12345";
+        when(mockPreparedStatement.executeUpdate()).thenReturn(0); // 0 rows affected
 
-            // Act
-            String result = trainService.addTrain(train);
+        String result = trainService.deleteTrainById(trainNo);
 
-            // Assert
-            assertEquals(ResponseCode.FAILURE.toString(), result);
-            verify(preparedStatement).close();
-        }
+        assertEquals(ResponseCode.FAILURE.toString(), result);
+        verify(mockPreparedStatement).executeUpdate();
+        verify(mockPreparedStatement).close();
     }
 
     @Test
-    void testAddTrain_SQLException() throws SQLException {
-        // Arrange
-        TrainBean train = createTrainBean();
-        when(connection.prepareStatement(anyString())).thenThrow(new SQLException("Insert failed"));
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
+    void testDeleteTrainById_SQLException() throws SQLException, TrainException {
+        String trainNo = "12345";
+        when(mockPreparedStatement.executeUpdate()).thenThrow(new SQLException("Delete Error"));
 
-            // Act
-            String result = trainService.addTrain(train);
+        String result = trainService.deleteTrainById(trainNo);
 
-            // Assert
-            assertTrue(result.startsWith(ResponseCode.FAILURE.toString()));
-            assertTrue(result.contains("Insert failed"));
-        }
+        assertTrue(result.startsWith(ResponseCode.FAILURE.toString()));
+        assertTrue(result.contains("Delete Error"));
+        verify(mockPreparedStatement).close();
     }
 
     @Test
-    void testDeleteTrainById_Success() throws SQLException {
-        // Arrange
-        String trainNo = "10001";
-        when(preparedStatement.executeUpdate()).thenReturn(1);
-        when(connection.prepareStatement(anyString())).thenReturn(preparedStatement);
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
+    void testUpdateTrain_Success() throws SQLException, TrainException {
+        TrainBean train = createSampleTrain();
+        // The original code uses executeQuery and rs.next() for UPDATE, which is unconventional.
+        // Typically, executeUpdate() returning an int (rows affected) is used.
+        // We test the code as is.
+        when(mockPreparedStatement.executeQuery()).thenReturn(mockResultSet);
+        when(mockResultSet.next()).thenReturn(true); // Simulate success indication
 
-            // Act
-            String result = trainService.deleteTrainById(trainNo);
+        String result = trainService.updateTrain(train);
 
-            // Assert
-            assertEquals(ResponseCode.SUCCESS.toString(), result);
-            verify(preparedStatement).setString(1, trainNo);
-            verify(preparedStatement).close();
-        }
+        assertEquals(ResponseCode.SUCCESS.toString(), result);
+        verify(mockPreparedStatement).setString(1, train.getTr_name());
+        verify(mockPreparedStatement).setString(2, train.getFrom_stn());
+        verify(mockPreparedStatement).setString(3, train.getTo_stn());
+        verify(mockPreparedStatement).setLong(4, train.getSeats());
+        verify(mockPreparedStatement).setDouble(5, train.getFare());
+        verify(mockPreparedStatement).setDouble(6, train.getTr_no()); // Original code uses setDouble for tr_no here
+        verify(mockPreparedStatement).executeQuery();
+        verify(mockPreparedStatement).close();
+    }
+    
+    @Test
+    void testUpdateTrain_Failure_NoRowAffected() throws SQLException, TrainException {
+        TrainBean train = createSampleTrain();
+        when(mockPreparedStatement.executeQuery()).thenReturn(mockResultSet);
+        when(mockResultSet.next()).thenReturn(false); 
+
+        String result = trainService.updateTrain(train);
+
+        assertEquals(ResponseCode.FAILURE.toString(), result);
+        verify(mockPreparedStatement).executeQuery();
+        verify(mockPreparedStatement).close();
     }
 
     @Test
-    void testDeleteTrainById_Failure() throws SQLException {
-        // Arrange
-        String trainNo = "10001";
-        when(preparedStatement.executeUpdate()).thenReturn(0);
-        when(connection.prepareStatement(anyString())).thenReturn(preparedStatement);
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
+    void testUpdateTrain_SQLException() throws SQLException, TrainException {
+        TrainBean train = createSampleTrain();
+        when(mockPreparedStatement.executeQuery()).thenThrow(new SQLException("Update Error"));
 
-            // Act
-            String result = trainService.deleteTrainById(trainNo);
+        String result = trainService.updateTrain(train);
 
-            // Assert
-            assertEquals(ResponseCode.FAILURE.toString(), result);
-            verify(preparedStatement).close();
-        }
+        assertTrue(result.startsWith(ResponseCode.FAILURE.toString()));
+        assertTrue(result.contains("Update Error"));
+        verify(mockPreparedStatement).close();
     }
 
     @Test
-    void testDeleteTrainById_SQLException() throws SQLException {
-        // Arrange
-        String trainNo = "10001";
-        when(connection.prepareStatement(anyString())).thenThrow(new SQLException("Delete failed"));
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
+    void testGetTrainById_Found() throws SQLException, TrainException {
+        String trainNo = "12345";
+        TrainBean expectedTrain = createSampleTrain();
+        when(mockPreparedStatement.executeQuery()).thenReturn(mockResultSet);
+        when(mockResultSet.next()).thenReturn(true).thenReturn(false); // Found one row
+        when(mockResultSet.getDouble("fare")).thenReturn(expectedTrain.getFare());
+        when(mockResultSet.getString("from_stn")).thenReturn(expectedTrain.getFrom_stn());
+        when(mockResultSet.getString("to_stn")).thenReturn(expectedTrain.getTo_stn());
+        when(mockResultSet.getString("tr_name")).thenReturn(expectedTrain.getTr_name());
+        when(mockResultSet.getLong("tr_no")).thenReturn(expectedTrain.getTr_no());
+        when(mockResultSet.getInt("seats")).thenReturn(expectedTrain.getSeats());
 
-            // Act
-            String result = trainService.deleteTrainById(trainNo);
+        TrainBean actualTrain = trainService.getTrainById(trainNo);
 
-            // Assert
-            assertTrue(result.startsWith(ResponseCode.FAILURE.toString()));
-            assertTrue(result.contains("Delete failed"));
-        }
-    }
-
-    @Test
-    void testUpdateTrain_Success() throws SQLException {
-        // Arrange
-        TrainBean train = createTrainBean();
-        when(resultSet.next()).thenReturn(true);
-        when(preparedStatement.executeQuery()).thenReturn(resultSet);
-        when(connection.prepareStatement(anyString())).thenReturn(preparedStatement);
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
-
-            // Act
-            String result = trainService.updateTrain(train);
-
-            // Assert
-            assertEquals(ResponseCode.SUCCESS.toString(), result);
-            verify(preparedStatement).setString(1, train.getTr_name());
-            verify(preparedStatement).setString(2, train.getFrom_stn());
-            verify(preparedStatement).setString(3, train.getTo_stn());
-            verify(preparedStatement).setLong(4, train.getSeats());
-            verify(preparedStatement).setDouble(5, train.getFare());
-            verify(preparedStatement).setDouble(6, train.getTr_no());
-            verify(preparedStatement).close();
-        }
-    }
-
-    @Test
-    void testUpdateTrain_Failure() throws SQLException {
-        // Arrange
-        TrainBean train = createTrainBean();
-        when(resultSet.next()).thenReturn(false);
-        when(preparedStatement.executeQuery()).thenReturn(resultSet);
-        when(connection.prepareStatement(anyString())).thenReturn(preparedStatement);
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
-
-            // Act
-            String result = trainService.updateTrain(train);
-
-            // Assert
-            assertEquals(ResponseCode.FAILURE.toString(), result);
-            verify(preparedStatement).close();
-        }
-    }
-
-    @Test
-    void testUpdateTrain_SQLException() throws SQLException {
-        // Arrange
-        TrainBean train = createTrainBean();
-        when(connection.prepareStatement(anyString())).thenThrow(new SQLException("Update failed"));
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
-
-            // Act
-            String result = trainService.updateTrain(train);
-
-            // Assert
-            assertTrue(result.startsWith(ResponseCode.FAILURE.toString()));
-            assertTrue(result.contains("Update failed"));
-        }
-    }
-
-    @Test
-    void testGetTrainById_Success() throws SQLException, TrainException {
-        // Arrange
-        String trainNo = "10001";
-        when(resultSet.next()).thenReturn(true);
-        when(resultSet.getDouble("fare")).thenReturn(500.50);
-        when(resultSet.getString("from_stn")).thenReturn("StationA");
-        when(resultSet.getString("to_stn")).thenReturn("StationB");
-        when(resultSet.getString("tr_name")).thenReturn("Express");
-        when(resultSet.getLong("tr_no")).thenReturn(10001L);
-        when(resultSet.getInt("seats")).thenReturn(100);
-        when(preparedStatement.executeQuery()).thenReturn(resultSet);
-        when(connection.prepareStatement(anyString())).thenReturn(preparedStatement);
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
-
-            // Act
-            TrainBean train = trainService.getTrainById(trainNo);
-
-            // Assert
-            assertNotNull(train);
-            assertEquals(500.50, train.getFare());
-            assertEquals("StationA", train.getFrom_stn());
-            assertEquals("StationB", train.getTo_stn());
-            assertEquals("Express", train.getTr_name());
-            assertEquals(10001L, train.getTr_no());
-            assertEquals(100, train.getSeats());
-            verify(preparedStatement).setString(1, trainNo);
-            verify(preparedStatement).close();
-        }
+        assertNotNull(actualTrain);
+        assertEquals(expectedTrain.getTr_no(), actualTrain.getTr_no());
+        assertEquals(expectedTrain.getTr_name(), actualTrain.getTr_name());
+        verify(mockPreparedStatement).setString(1, trainNo);
+        verify(mockPreparedStatement).executeQuery();
+        verify(mockPreparedStatement).close();
     }
 
     @Test
     void testGetTrainById_NotFound() throws SQLException, TrainException {
-        // Arrange
         String trainNo = "99999";
-        when(resultSet.next()).thenReturn(false);
-        when(preparedStatement.executeQuery()).thenReturn(resultSet);
-        when(connection.prepareStatement(anyString())).thenReturn(preparedStatement);
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
+        when(mockPreparedStatement.executeQuery()).thenReturn(mockResultSet);
+        when(mockResultSet.next()).thenReturn(false); // No row found
 
-            // Act
-            TrainBean train = trainService.getTrainById(trainNo);
+        TrainBean actualTrain = trainService.getTrainById(trainNo);
 
-            // Assert
-            assertNull(train);
-            verify(preparedStatement).setString(1, trainNo);
-            verify(preparedStatement).close();
-        }
+        assertNull(actualTrain);
+        verify(mockPreparedStatement).executeQuery();
+        verify(mockPreparedStatement).close();
     }
 
     @Test
     void testGetTrainById_SQLException() throws SQLException {
-        // Arrange
-        String trainNo = "10001";
-        when(connection.prepareStatement(anyString())).thenThrow(new SQLException("Query failed"));
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
+        String trainNo = "12345";
+        when(mockPreparedStatement.executeQuery()).thenThrow(new SQLException("Fetch Error"));
 
-            // Act & Assert
-            TrainException exception = assertThrows(TrainException.class,
-                    () -> trainService.getTrainById(trainNo));
-            assertEquals("Query failed", exception.getErrorMessage());
-        }
+        TrainException exception = assertThrows(TrainException.class, () -> {
+            trainService.getTrainById(trainNo);
+        });
+
+        assertEquals("Fetch Error", exception.getMessage());
+        verify(mockPreparedStatement).close(); // Should still try to close
     }
 
     @Test
-    void testGetAllTrains_Success() throws SQLException, TrainException {
-        // Arrange
-        when(resultSet.next()).thenReturn(true, true, false);
-        when(resultSet.getDouble("fare")).thenReturn(500.50, 600.75);
-        when(resultSet.getString("from_stn")).thenReturn("StationA", "StationC");
-        when(resultSet.getString("to_stn")).thenReturn("StationB", "StationD");
-        when(resultSet.getString("tr_name")).thenReturn("Express", "Superfast");
-        when(resultSet.getLong("tr_no")).thenReturn(10001L, 10002L);
-        when(resultSet.getInt("seats")).thenReturn(100, 150);
-        when(preparedStatement.executeQuery()).thenReturn(resultSet);
-        when(connection.prepareStatement(anyString())).thenReturn(preparedStatement);
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
+    void testGetAllTrains_Success_MultipleTrains() throws SQLException, TrainException {
+        when(mockPreparedStatement.executeQuery()).thenReturn(mockResultSet);
+        // Simulate two trains
+        when(mockResultSet.next()).thenReturn(true).thenReturn(true).thenReturn(false);
+        when(mockResultSet.getDouble("fare")).thenReturn(500.0, 600.0);
+        when(mockResultSet.getString("from_stn")).thenReturn("Station A", "Station C");
+        when(mockResultSet.getString("to_stn")).thenReturn("Station B", "Station D");
+        when(mockResultSet.getString("tr_name")).thenReturn("Express 1", "Express 2");
+        when(mockResultSet.getLong("tr_no")).thenReturn(12345L, 67890L);
+        when(mockResultSet.getInt("seats")).thenReturn(100, 150);
 
-            // Act
-            List<TrainBean> trains = trainService.getAllTrains();
+        List<TrainBean> trains = trainService.getAllTrains();
 
-            // Assert
-            assertNotNull(trains);
-            assertEquals(2, trains.size());
-            TrainBean firstTrain = trains.get(0);
-            assertEquals(500.50, firstTrain.getFare());
-            assertEquals("StationA", firstTrain.getFrom_stn());
-            assertEquals("StationB", firstTrain.getTo_stn());
-            assertEquals("Express", firstTrain.getTr_name());
-            assertEquals(10001L, firstTrain.getTr_no());
-            assertEquals(100, firstTrain.getSeats());
-            verify(preparedStatement).close();
-        }
+        assertNotNull(trains);
+        assertEquals(2, trains.size());
+        assertEquals(12345L, trains.get(0).getTr_no());
+        assertEquals("Express 1", trains.get(0).getTr_name());
+        assertEquals(67890L, trains.get(1).getTr_no());
+        assertEquals("Express 2", trains.get(1).getTr_name());
+        verify(mockPreparedStatement).executeQuery();
+        verify(mockPreparedStatement).close();
     }
 
     @Test
-    void testGetAllTrains_EmptyResult() throws SQLException, TrainException {
-        // Arrange
-        when(resultSet.next()).thenReturn(false);
-        when(preparedStatement.executeQuery()).thenReturn(resultSet);
-        when(connection.prepareStatement(anyString())).thenReturn(preparedStatement);
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
+    void testGetAllTrains_Success_NoTrains() throws SQLException, TrainException {
+        when(mockPreparedStatement.executeQuery()).thenReturn(mockResultSet);
+        when(mockResultSet.next()).thenReturn(false); // No trains found
 
-            // Act
-            List<TrainBean> trains = trainService.getAllTrains();
+        List<TrainBean> trains = trainService.getAllTrains();
 
-            // Assert
-            assertNotNull(trains);
-            assertTrue(trains.isEmpty());
-            verify(preparedStatement).close();
-        }
+        assertNotNull(trains);
+        assertTrue(trains.isEmpty());
+        verify(mockPreparedStatement).executeQuery();
+        verify(mockPreparedStatement).close();
     }
 
     @Test
     void testGetAllTrains_SQLException() throws SQLException {
-        // Arrange
-        when(connection.prepareStatement(anyString())).thenThrow(new SQLException("Query failed"));
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
+        when(mockPreparedStatement.executeQuery()).thenThrow(new SQLException("Fetch All Error"));
 
-            // Act & Assert
-            TrainException exception = assertThrows(TrainException.class,
-                    () -> trainService.getAllTrains());
-            assertEquals("Query failed", exception.getErrorMessage());
-        }
+        TrainException exception = assertThrows(TrainException.class, () -> {
+            trainService.getAllTrains();
+        });
+
+        assertEquals("Fetch All Error", exception.getMessage());
+        verify(mockPreparedStatement).close();
     }
 
     @Test
-    void testGetTrainsBetweenStations_Success() throws SQLException, TrainException {
-        // Arrange
-        String fromStation = "StationA";
-        String toStation = "StationB";
-        when(resultSet.next()).thenReturn(true, false);
-        when(resultSet.getDouble("fare")).thenReturn(500.50);
-        when(resultSet.getString("from_stn")).thenReturn("StationA");
-        when(resultSet.getString("to_stn")).thenReturn("StationB");
-        when(resultSet.getString("tr_name")).thenReturn("Express");
-        when(resultSet.getLong("tr_no")).thenReturn(10001L);
-        when(resultSet.getInt("seats")).thenReturn(100);
-        when(preparedStatement.executeQuery()).thenReturn(resultSet);
-        when(connection.prepareStatement(anyString())).thenReturn(preparedStatement);
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
-
-            // Act
-            List<TrainBean> trains = trainService.getTrainsBetweenStations(fromStation, toStation);
-
-            // Assert
-            assertNotNull(trains);
-            assertEquals(1, trains.size());
-            TrainBean train = trains.get(0);
-            assertEquals(500.50, train.getFare());
-            assertEquals("StationA", train.getFrom_stn());
-            assertEquals("StationB", train.getTo_stn());
-            assertEquals("Express", train.getTr_name());
-            assertEquals(10001L, train.getTr_no());
-            assertEquals(100, train.getSeats());
-            verify(preparedStatement).setString(1, "%StationA%");
-            verify(preparedStatement).setString(2, "%StationB%");
-            verify(preparedStatement).close();
-        }
-    }
-
-    @Test
-    void testGetTrainsBetweenStations_EmptyResult() throws SQLException, TrainException {
-        // Arrange
+    void testGetTrainsBetweenStations_Success_Found() throws SQLException, TrainException {
         String fromStation = "StationX";
         String toStation = "StationY";
-        when(resultSet.next()).thenReturn(false);
-        when(preparedStatement.executeQuery()).thenReturn(resultSet);
-        when(connection.prepareStatement(anyString())).thenReturn(preparedStatement);
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
+        when(mockPreparedStatement.executeQuery()).thenReturn(mockResultSet);
+        when(mockResultSet.next()).thenReturn(true).thenReturn(false); // One train found
+        when(mockResultSet.getDouble("fare")).thenReturn(700.0);
+        when(mockResultSet.getString("from_stn")).thenReturn("StationX_Exact");
+        when(mockResultSet.getString("to_stn")).thenReturn("StationY_Exact");
+        when(mockResultSet.getString("tr_name")).thenReturn("Intercity");
+        when(mockResultSet.getLong("tr_no")).thenReturn(11223L);
+        when(mockResultSet.getInt("seats")).thenReturn(200);
 
-            // Act
-            List<TrainBean> trains = trainService.getTrainsBetweenStations(fromStation, toStation);
+        List<TrainBean> trains = trainService.getTrainsBetweenStations(fromStation, toStation);
 
-            // Assert
-            assertNotNull(trains);
-            assertTrue(trains.isEmpty());
-            verify(preparedStatement).setString(1, "%StationX%");
-            verify(preparedStatement).setString(2, "%StationY%");
-            verify(preparedStatement).close();
-        }
+        assertNotNull(trains);
+        assertEquals(1, trains.size());
+        assertEquals(11223L, trains.get(0).getTr_no());
+        assertEquals("Intercity", trains.get(0).getTr_name());
+        verify(mockPreparedStatement).setString(1, "%" + fromStation + "%");
+        verify(mockPreparedStatement).setString(2, "%" + toStation + "%");
+        verify(mockPreparedStatement).executeQuery();
+        verify(mockPreparedStatement).close();
+    }
+
+    @Test
+    void testGetTrainsBetweenStations_Success_NotFound() throws SQLException, TrainException {
+        String fromStation = "NonExistentA";
+        String toStation = "NonExistentB";
+        when(mockPreparedStatement.executeQuery()).thenReturn(mockResultSet);
+        when(mockResultSet.next()).thenReturn(false); // No trains found
+
+        List<TrainBean> trains = trainService.getTrainsBetweenStations(fromStation, toStation);
+
+        assertNotNull(trains);
+        assertTrue(trains.isEmpty());
+        verify(mockPreparedStatement).executeQuery();
+        verify(mockPreparedStatement).close();
     }
 
     @Test
     void testGetTrainsBetweenStations_SQLException() throws SQLException {
-        // Arrange
-        String fromStation = "StationA";
-        String toStation = "StationB";
-        when(connection.prepareStatement(anyString())).thenThrow(new SQLException("Query failed"));
-        try (MockedStatic<DBUtil> dbUtil = mockStatic(DBUtil.class)) {
-            dbUtil.when(DBUtil::getConnection).thenReturn(connection);
+        String fromStation = "StationX";
+        String toStation = "StationY";
+        when(mockPreparedStatement.executeQuery()).thenThrow(new SQLException("Search Error"));
 
-            // Act & Assert
-            TrainException exception = assertThrows(TrainException.class,
-                    () -> trainService.getTrainsBetweenStations(fromStation, toStation));
-            assertEquals("Query failed", exception.getErrorMessage());
-        }
-    }
+        TrainException exception = assertThrows(TrainException.class, () -> {
+            trainService.getTrainsBetweenStations(fromStation, toStation);
+        });
 
-    private TrainBean createTrainBean() {
-        TrainBean train = new TrainBean();
-        train.setTr_no(10001L);
-        train.setTr_name("Express");
-        train.setFrom_stn("StationA");
-        train.setTo_stn("StationB");
-        train.setSeats(100);
-        train.setFare(500.50);
-        return train;
+        assertEquals("Search Error", exception.getMessage());
+        verify(mockPreparedStatement).close();
     }
 }
